@@ -1,0 +1,422 @@
+Define:
+  UNITY_SETUP_BRDF_INPUT -->  MetallicSetup
+  define UNITY_SETUP_BRDF_INPUT --> SpecularSetup
+
+Tags:
+  "PerformanceChecks"="False"
+
+ 宏:
+   UNITY_COLORSPACE_GAMMA
+   UNITY_SHOULD_SAMPLE_SH  ?
+   UNITY_SAMPLE_FULL_SH_PER_PIXEL
+   VERTEXLIGHT_ON ?
+   UNITY_STANDARD_SIMPLE <-- UNITY_NO_FULL_STANDARD_SHADER <--if Standard shader BRDF3 with extra simplifications should be used.
+   UNITY_ASSUME_UNIFORM_SCALING ?
+   UNITY_REQUIRE_FRAG_WORLDPOS ?
+   LOD_FADE_CROSSFADE
+   UNITY_CONSERVE_ENERGY_MONOCHROME？
+   UNITY_PACK_WORLDPOS_WITH_TANGENT
+   UNITY_ENABLE_DETAIL_NORMALMAP
+   UNITY_LIGHT_PROBE_PROXY_VOLUME
+   UNITY_NO_SCREENSPACE_SHADOWS: is set when screenspace cascaded shadow maps are disabled.
+   SHADOWS_DEPTH / SHADOWS_SCREEN / SHADOWS_CUBE
+   UNITY_SPECCUBE_BLENDING?
+   UNITY_SPECCUBE_BOX_PROJECTION?
+   UNITY_ENABLE_REFLECTION_BUFFERS?
+   UNITY_SPECCUBE_BOX_PROJECTION?
+   HANDLE_SHADOWS_BLENDING_IN_GI   -->  #if defined( SHADOWS_SCREEN ) && defined( LIGHTMAP_ON )
+
+   UNITY_LIGHTMAP_DLDR_ENCODING /UNITY_LIGHTMAP_RGBM_ENCODING
+   UNITY_FORCE_LINEAR_READ_FOR_RGBM ？ 
+UNITY_HALF_PRECISION_FRAGMENT_SHADER_REGISTERS
+   灯光图结算且在Gamma空间时
+
+
+
+参数:
+  _GlossMapScale
+  _LightShadowData?
+  _ProjectionParams? shadow
+  _LightShadowData.x 表阴影强度？
+常量:
+  unity_ColorSpaceGrey
+  unity_ColorSpaceDouble
+  unity_ColorSpaceDielectricSpec
+  unity_ColorSpaceLuminance
+  以上4个分linear和gamma两种情况
+  unity_OcclusionMaskSelector?
+  unity_SHC.w？
+  unity_ProbeVolumeParams.x   == 1 在 ShaderSH计算中频繁用来判断条件
+    .y : transformToLocal 是否要转到local坐标系; .z: texelSizeX
+  unity_ProbeVolumeSizeInv  用于计算采样unity_ProbeVolumeSH时用的坐标？
+  unity_ProbeVolumeWorldToObject
+  unity_SpecCube0_BoxMin
+  unity_SpecCube0_BoxMax
+  unity_SpecCube1_BoxMin
+  unity_SpecCube1_BoxMax
+  unity_SpecCube1_ProbePosition
+  unity_Lightmap_HDR 灯光图系数
+  unity_ShadowColor ? 从哪里来的
+  unity_DynamicLightmap_HDR
+  unity_DynamicDirectionality 贴图
+
+
+
+
+Pass:
+   Name "FORWARD"
+     "UnityStandardCoreForward.cginc"
+       vertBase / fragBase
+         UNITY_STANDARD_SIMPLE:
+           "UnityStandardCoreForwardSimple.cginc"
+              vertBase / fragBase
+                vertBase:
+                  VertexInput:
+                    vertex / normal / uv0 / uv1 / (uv2) / (tangent)
+                  vertForwardBaseSimple: --> VertexOutputBaseSimple:
+                  VertexOutputBaseSimple:
+                    UNITY_POSITION(pos) /
+                    (4) tex / xy 是_MainTex; zw 是 _DetailAlbedoMap, 当_UVSec 非0 时，使用uv1来_DetailAlbedoMap
+                    (4) eyeVec /  //w: grazingTerm ? 如何计算的
+                    (4) ambientOrLightmapUV /  // SH or Lightmap UV ？ 如何计算的
+                      VertexGIForward(v, posWorld, normalWorld):
+                        分四个情况：
+                          LIGHTMAP_ON:
+                            xy灯光图uv，zw = 0
+                          DYNAMICLIGHTMAP_ON:
+                            xy灯光图uv，zw 从 uv2 和 unity_DynamicLightmapST 计算
+                         非LIGHTMAP_ON 和 DYNAMICLIGHTMAP_ON情况下:
+                           UNITY_SHOULD_SAMPLE_SH && VERTEXLIGHT_ON:
+                             Shade4PointLights
+                           UNITY_SHOULD_SAMPLE_SH &&  !VERTEXLIGHT_ON:
+                             ShadeSHPerVertex
+                               if (SHADER_TARGET < 30) || UNITY_STANDARD_SIMPLE:
+                                 ShadeSH9:
+                                  SHEvalLinearL0L1 + SHEvalLinearL2
+                               else:
+                                 SHEvalLinearL2    疑问： 为什么在非Simple下，只做L2计算
+                     SHADOW_COORDS /
+                       TRANSFER_SHADOW(o):
+                         ☐ 
+                    (4) UNITY_FOG_COORDS_PACKED /  // x: fogCoord, yzw: reflectVec  视线eyeVec与法线平面反射
+                    (4) normalWorld /   // xyz :worldNormal, w : fresnel term
+                      UnityObjectToWorldNormal:
+                        if UNITY_ASSUME_UNIFORM_SCALING:
+                          UnityObjectToWorldDir(norm):
+                            normalize(mul((float3x3)unity_ObjectToWorld, dir))
+                        else:
+                          normalize(mul(norm, (float3x3)unity_WorldToObject))
+                    ((3)tangentSpaceLightDir） 当 _NORMALMAP
+                     TangentSpaceLightingInput:
+                        tangentWorld --> binormalWorld --> tangentSpaceLightDir
+                        TransformToTangentSpace:
+                          half3(dot(tangent, v), dot(binormal, v), dot(normal, v));
+                    ((3)tangentSpaceEyeVec)  当 _NORMALMAP && SPECULAR_HIGHLIGHTS
+                      同tangentSpaceLightDir:
+                          normalize(TransformToTangentSpace(tangentWorld, binormalWorld, normalWorld, eyeVecWorld));
+                    ((3)posWorld)  当 UNITY_REQUIRE_FRAG_WORLDPOS
+
+
+                fragBase:
+                  VertexOutputBaseSimple --> fragForwardBaseSimpleInternal:
+                    fragForwardBaseSimpleInternal:
+                      UNITY_APPLY_DITHER_CROSSFADE(i.pos.xy):
+                        UnityApplyDitherCrossFade(vpos):
+                      FragmentSetupSimple --> FragmentCommonData:
+                        FragmentCommonData:
+                          (3)diffColor
+                          (3)specColor
+                          (1) oneMinusReflectivity
+                          (1) smoothness
+                          (3) normalWorld
+                          (3) eyeVec
+                          (1) alpha
+                          (3) posWorld
+                          (3) reflUVW 当 UNITY_STANDARD_SIMPLE
+                          (3) tangentSpaceNormal 当 UNITY_STANDARD_SIMPLE
+                        FragmentSetupSimple:
+                          Alpha:
+                            if _SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A:
+                              _Color.a
+                            else:
+                              _MainTex.a * _Color.a
+                          UNITY_SETUP_BRDF_INPUT --> FragmentSetupSimple:
+                            UNITY_SETUP_BRDF_INPUT = SpecularSetup
+                              SpecularSetup:
+                                SpecularGloss:
+                                  sg.rgb 是高光颜色，a是gloss
+                                EnergyConservationBetweenDiffuseAndSpecular:
+                                  UNITY_CONSERVE_ENERGY 下会再根据 UNITY_CONSERVE_ENERGY_MONOCHROME来决定如果从albedo中减去高光亮度
+                                  SpecularStrength:
+                                    小于3.0直接用specular.r,否则哦用specular中数值最大的
+                                Albedo:
+                                  采样颜色图，3.0及以上加上detail
+                                  detail 有4中叠加方式，_DETAIL_MULX2 / _DETAIL_MUL / _DETAIL_ADD / _DETAIL_LERP
+                                  LerpWhiteTo: 字面意思
+
+                              RoughnessSetup:
+                                MetallicRough:
+                                DiffuseAndSpecularFromMetallic:
+                          PreMultiplyAlpha:
+                            if _ALPHAPREMULTIPLY_ON:
+                              颜色×alpha
+                            3.0及以上，根据Reflectivity修正alpha ?
+                          NormalInTangentSpace:
+                            还会取detail normal 当 UNITY_ENABLE_DETAIL_NORMALMAP
+                            BlendNormals:
+                              xy相加， z 相乘
+                      MainLightSimple --> UnityLight:
+                        UnityLight:
+                          (3) color
+                          (3) dir
+                        MainLight:
+                          取出灯光颜色额和方向
+                      ndotl:
+                        非灯光图且normalmap下，用tangent计算；反之，用世界计算
+                      UnitySampleBakedOcclusion:
+                        LPPV_SampleProbeOcclusion:
+                          会根据unity_ProbeVolumeParams参数和世界坐标，采样unity_ProbeVolumeSH 这个3D纹理
+                      SHADOW_ATTENUATION:
+                        unitySampleShadow:
+                          非UNITY_NO_SCREENSPACE_SHADOWS下
+                            ComputeScreenPos:
+                            UNITY_SAMPLE_SCREEN_SHADOW:
+                              根据UNITY_NO_SCREENSPACE_SHADOWS还分两种情况
+                              ☐ todo                              
+                              ComputeNonStereoScreenPos:
+                      UnityMixRealtimeAndBakedShadows:
+                        将backedOcclusion和shadow进行混合，其中分多中情况
+                        ☐ todo
+                      Occlusion:
+                        采样_OcclusionMap.g, 3.0及以上_OcclusionStrength会起效
+                      REFLECTVEC_FOR_SPECULAR:
+                        if SPECULAR_HIGHLIGHTS:
+                          0,0,0
+                        else:
+                          返回reflUVW或者tangent下的ref当_NORMALMAP
+                      LightDirForSpecular:
+                        返回灯光方向，分世界方向和_Tangent，当_NORMALMAP
+                      FragmentGI:
+                        调用6参数版本的FragmentGI
+                        UnityGIInput:
+                          UnityLight
+                          (3) worldPos
+                          (3) worldViewDir
+                          (1) atten
+                          (3) ambient
+                          (4) lightmapUV
+                          (4,2) boxMin  #if UNITY_SPECCUBE_BLENDING || UNITY_SPECCUBE_BOX_PROJECTION || UNITY_ENABLE_REFLECTION_BUFFERS
+                          (4,2) boxMax #UNITY_SPECCUBE_BOX_PROJECTION 
+                          (4,2) probePosition #UNITY_SPECCUBE_BOX_PROJECTION 
+                          (4,2) probeHDR = unity_SpecCube0_HDR, unity_SpecCube1_HDR
+                        UnityGlobalIllumination:
+                          if reflections:
+                            UnityGlossyEnvironmentSetup  --> Unity_GlossyEnvironmentData:
+                              Unity_GlossyEnvironmentData:
+                                (1) roughness
+                                (3) refUVW
+                              UnityGlobalIllumination 4参数版本: 
+                          UnityGlobalIllumination 3参数版本:
+                            UnityGI_Base:
+                              UnityGI:
+                                (1) UnityLight light
+                                  (3) color
+                                  (3) dir
+                                (1) UnityIndirect indirect
+                                  (3) diffuse
+                                  (3) specular
+                              ResetUnityGI:
+                                重置UnityGI中的参数到0
+                              if HANDLE_SHADOWS_BLENDING_IN_GI 则 还会计算衰减atten
+                              ShadeSHPerPixel:
+                                分三种情况：
+                                1、if UNITY_STANDARD_SIMPLE 或者小于3.0 则不计算，因为在顶点中计算过了
+                                2、if UNITY_SAMPLE_FULL_SH_PER_PIXEL时，同时计算L0、L1、L2然后做gamma矫正
+                                SHEvalLinearL0L1_SampleProbeVolume 当 unity_ProbeVolumeParams.x == 1.0:
+                                  采样unity_ProbeVolumeSH，否则采样SH9
+                                3、上面两种条件以外，L2 per顶点，L0、L1 per pixel
+                              DecodeLightmap:
+                                DecodeLightmapRGBM: 当 UNITY_LIGHTMAP_RGBM_ENCODING:
+                                  unity_Lightmap_HDR.x * pow(.a, unity_Lightmap_HDR.y )* rgb 当linear
+                                DecodeLightmapDoubleLDR: 当 UNITY_LIGHTMAP_DLDR_ENCODING:
+                                  *2, 且一定是gamma空间
+                              if DIRLIGHTMAP_COMBINED:
+                                1、采样 unity_LightmapInd
+                                2、DecodeDirectionalLightmap
+                                  近似理解为：世界法线与dirMap数值做点积，然后与颜色相乘
+                                3、SubtractMainLightWithRealtimeAttenuationFromLightmap 当 LIGHTMAP_SHADOW_MIXING && ！SHADOWS_SHADOWMASK && SHADOWS_SCREEN
+                                  SubtractMainLightWithRealtimeAttenuationFromLightmap:
+                                    a、计算出mainLight产生的阴影贡献
+                                    b、将灯光从朝向灯光方向面的非阴影区的减去
+                                    c、与阴影颜色取大值
+                                    d、与灯光图中的小值
+                              else:
+                                只加上减去主灯的灯光图
+                              if DYNAMICLIGHTMAP_ON:
+                                 1、采样unity_DynamicLightmap
+                                   DecodeRealtimeLightmap:
+                                     pow ((unity_DynamicLightmap_HDR.x * color.a) * color.rgb, unity_DynamicLightmap_HDR.y);
+                                   if DIRLIGHTMAP_COMBINED:
+                                     采样unity_DynamicDirectionality
+                                     DecodeDirectionalLightmap:
+                                       见上
+                                   else:
+                                     只加上RealtimeLight
+                      BRDF3_Indirect:
+                        返回间接diffuse + 间接 specular，specular更根据frenelTerm lerp到grazingTerm
+                        PerVertexGrazingTerm:
+                          if GLOSSMAP:
+                            FragmentCommonData.smoothness + (1-FragmentCommonData.oneMinusReflectivity)
+                          else:
+                            VertexOutputBaseSimple.w
+                        PerVertexFresnelTerm:
+                          i.normalWorld.w;
+                      BRDF3DirectSimple:
+                        if SPECULAR_HIGHLIGHTS:
+                          BRDF3_Direct:
+                            采样unity_NHxRoughness × 16
+                            uv坐标为(rlPow4, roughness)
+                            SmoothnessToPerceptualRoughness:
+                        else:
+                          直接返回diffuse
+                      Emission:
+                        采样_EmissionMap后 × _EmissionColor
+                      UNITY_APPLY_FOG:
+                        UNITY_APPLY_FOG_COLOR: 
+                          略 
+
+
+
+              vertAdd / fragAdd
+              vertAdd:
+                vertForwardAddSimple: --> VertexOutputForwardAddSimple:
+              fragAdd:
+                 VertexOutputForwardAddSimple: -->  fragForwardAddSimpleInternal:
+         else:
+           "UnityStandardCoreForward.cginc"
+                fragBase:
+                  VertexOutputForwardBase --> fragForwardBaseInternal:
+                    VertexOutputForwardBase:
+                      (4)tex
+                      (4)eyeVec
+                      (4,3)tangentToWorldAndPackedData // [3x3:tangentToWorld | 1x3:viewDirForParallax or worldPos]
+                      (4)ambientOrLightmapUV
+                      ()UNITY_LIGHTING_COORDS
+                      (3) posWorld  //UNITY_REQUIRE_FRAG_WORLDPOS && !UNITY_PACK_WORLDPOS_WITH_TANGENT
+                      UNITY_APPLY_DITHER_CROSSFADE(i.pos.xy):
+                        略
+                      FRAGMENT_SETUP --> FragmentCommonData:
+                        FragmentCommonData:
+                          见上
+                        FragmentSetup:
+                          Parallax:
+                            用ParallaxOffset1Step 计算offset 当 _PARALLAXMAP 且 大于等于3.0
+                          UNITY_SETUP_BRDF_INPUT --> RoughnessSetup:
+                            MetallicRough:
+                              smoothness = metallicGloss.y ==  1 - (real roughness)^2 注释里
+                            DiffuseAndSpecularFromMetallic:
+                              SpecColor = 从 unity_ColorSpaceDielectricSpec  (0.22 0.22 0.22 0.779)lerp到Albedo， 根据metallic
+                              OneMinusReflectivityFromMetallic:
+                                1-lerp(dielectricSpec, 1, metallic)
+                          UnityComputeForwardShadows:
+
+
+
+
+
+         NOT UNITY_STANDARD_SIMPLE:
+           "UnityStandardCore.cginc"
+              vertBase / fragBase
+              vertAdd / fragAdd
+
+   Name "FORWARD_DELTA"  //  Additive forward pass (one light per pass)
+   Name "ShadowCaster"
+     "UnityStandardShadow.cginc"
+         vertShadowCaster / fragShadowCaster
+   Name "DEFERRED"
+     "UnityStandardCore.cginc"
+        vertDeferred  / fragDeferred
+  Name "META"
+    "UnityStandardMeta.cginc"
+      vert_meta / frag_meta
+
+
+Feature:
+  _NORMALMAP
+  _ALPHATEST_ON _ALPHABLEND_ON _ALPHAPREMULTIPLY_ON
+  _EMISSION
+  _METALLICGLOSSMAP
+  _DETAIL_MULX2
+  _SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A
+  _SPECULARHIGHLIGHTS_OFF
+  _GLOSSYREFLECTIONS_OFF
+  _PARALLAXMAP
+
+
+常见方法:
+  UNITY_SETUP_INSTANCE_ID(v);
+  UNITY_INITIALIZE_OUTPUT(VertexOutputBaseSimple, o);
+  UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
+  TexCoords(v); 
+  ambientOrLightmapUV.rgb = Shade4PointLights (
+                unity_4LightPosX0, unity_4LightPosY0, unity_4LightPosZ0,
+                unity_LightColor[0].rgb, unity_LightColor[1].rgb, unity_LightColor[2].rgb, unity_LightColor[3].rgb,
+                unity_4LightAtten0, posWorld, normalWorld);
+                计算最多4盏灯
+  ShadeSHPerVertex (normalWorld, ambientOrLightmapUV.rgb):
+    if (SHADER_TARGET < 30) || UNITY_STANDARD_SIMPLE:
+     ambient += ShadeSH9 (half4(normal, 1.0))
+   else:
+     ambient += SHEvalLinearL2 (half4(normal, 1.0))
+     SH data 都是linear的，如果是Gamma空间，需要先矫正
+
+
+
+常见计算:
+  float4 posWorld = mul(unity_ObjectToWorld, v.vertex);
+  o.pos = UnityObjectToClipPos(v.vertex);
+  eyeVec = normalize(posWorld.xyz - _WorldSpaceCameraPos);
+  normalWorld = UnityObjectToWorldNormal(v.normal);
+  o.fogCoord.yzw = reflectVec = reflect(eyeVec, normalWorld);
+  fresnel term = Pow4(1 - saturate(dot(normalWorld, -eyeVec)))
+
+  half3 tangentWorld = UnityObjectToWorldDir(vTangent.xyz)
+  half3 binormalWorld = cross(normalWorld, tangentWorld) * sign;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Skybox/Procedural:
+  kScatteringWavelength 根据颜色lerp出波长
+
+
+
+
+
+
+
+
+
+
